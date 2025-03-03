@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
+	"emil/internal/config"
 	"emil/internal/converter"
 	"emil/internal/models"
+	"emil/internal/security"
 )
 
 // Constants for worker behavior
@@ -33,10 +36,13 @@ type Worker struct {
 	stopChan          chan struct{}
 	verbose           bool
 	lastActivity      time.Time
+	config            *config.Config
+	scanner           *security.Scanner
 }
 
 // NewWorker creates a new worker
-func NewWorker(id int, taskChan <-chan models.Task, statusChan chan<- models.StatusUpdate, verbose bool) *Worker {
+func NewWorker(id int, taskChan <-chan models.Task, statusChan chan<- models.StatusUpdate,
+	cfg *config.Config, scanner *security.Scanner) *Worker {
 	return &Worker{
 		id:           id,
 		taskChan:     taskChan,
@@ -44,8 +50,10 @@ func NewWorker(id int, taskChan <-chan models.Task, statusChan chan<- models.Sta
 		done:         make(chan struct{}),
 		maxRetries:   maxRetries,
 		stopChan:     make(chan struct{}),
-		verbose:      verbose,
+		verbose:      cfg.Verbose,
 		lastActivity: time.Now(),
+		config:       cfg,
+		scanner:      scanner,
 	}
 }
 
@@ -248,7 +256,10 @@ func (w *Worker) convertFile(ctx context.Context, task models.Task) error {
 	}
 
 	// Perform the actual conversion
-	err := converter.ConvertEMLToPDF(task.FilePath)
+	result, err := converter.ConvertEMLToPDF(task.FilePath, w.config, w.scanner)
+	if err != nil {
+		return err
+	}
 
 	// Check for context cancellation again
 	select {
@@ -258,13 +269,18 @@ func (w *Worker) convertFile(ctx context.Context, task models.Task) error {
 		// Continue
 	}
 
-	// Report 75% progress after conversion
-	if err == nil {
-		w.sendStatus(task.ID, models.StatusProcessing, 0.75,
+	// Report security alerts if any
+	if len(result.SecurityAlerts) > 0 {
+		alerts := strings.Join(result.SecurityAlerts, ", ")
+		w.sendStatus(task.ID, models.StatusProcessing, 0.9,
+			fmt.Sprintf("Security alerts: %s", alerts), models.ProcessingStats{}, nil)
+	} else {
+		// Report 90% progress after conversion
+		w.sendStatus(task.ID, models.StatusProcessing, 0.9,
 			"PDF created, finalizing", models.ProcessingStats{}, nil)
 	}
 
-	return err
+	return nil
 }
 
 // sendStatus sends a status update to the manager

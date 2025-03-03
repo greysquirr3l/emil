@@ -15,6 +15,7 @@ import (
 	"emil/internal/config"
 	"emil/internal/models"
 	"emil/internal/resource"
+	"emil/internal/security"
 	"emil/internal/worker"
 )
 
@@ -42,10 +43,11 @@ type Manager struct {
 	failedTasks   []models.Task
 	stuckTasks    map[string]time.Time
 	stuckTaskLock sync.Mutex
+	scanner       *security.Scanner
 }
 
 // NewManager creates a new manager instance
-func NewManager(cfg *config.Config) *Manager {
+func NewManager(cfg *config.Config, scanner *security.Scanner) *Manager {
 	return &Manager{
 		config:     cfg,
 		taskChan:   make(chan models.Task, 100),
@@ -58,6 +60,7 @@ func NewManager(cfg *config.Config) *Manager {
 			MinWorkers:     1,
 		},
 		stuckTasks: make(map[string]time.Time),
+		scanner:    scanner,
 	}
 }
 
@@ -224,7 +227,7 @@ func (m *Manager) initWorkers(ctx context.Context) {
 	m.workers = make([]*worker.Worker, m.config.WorkerCount)
 
 	for i := 0; i < m.config.WorkerCount; i++ {
-		m.workers[i] = worker.NewWorker(i, m.taskChan, m.statusChan, m.config.Verbose)
+		m.workers[i] = worker.NewWorker(i, m.taskChan, m.statusChan, m.config, m.scanner)
 		m.workers[i].Start(ctx, m.resourceMgr.PauseControl())
 	}
 
@@ -246,7 +249,7 @@ func (m *Manager) initWorkers(ctx context.Context) {
 			case adjustment := <-m.resourceMgr.WorkerControl():
 				if adjustment > 0 {
 					// Add a worker
-					w := worker.NewWorker(nextWorkerID, m.taskChan, m.statusChan, m.config.Verbose)
+					w := worker.NewWorker(nextWorkerID, m.taskChan, m.statusChan, m.config, m.scanner)
 					w.Start(ctx, m.resourceMgr.PauseControl())
 					workerPool[nextWorkerID] = w
 					nextWorkerID++
